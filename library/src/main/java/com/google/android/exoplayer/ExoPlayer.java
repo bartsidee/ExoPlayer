@@ -101,14 +101,14 @@ public interface ExoPlayer {
      * The default minimum duration of data that must be buffered for playback to start or resume
      * following a user action such as a seek.
      */
-    public static final int DEFAULT_MIN_BUFFER_MS = 2500;
+    public static final int DEFAULT_MIN_BUFFER_MS = 3000;
 
     /**
      * The default minimum duration of data that must be buffered for playback to resume
      * after a player invoked rebuffer (i.e. a rebuffer that occurs due to buffer depletion, and
      * not due to a user action such as starting playback or seeking).
      */
-    public static final int DEFAULT_MIN_REBUFFER_MS = 5000;
+    public static final int DEFAULT_MIN_REBUFFER_MS = 6000;
 
     private Factory() {}
 
