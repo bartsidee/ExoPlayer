@@ -19,6 +19,8 @@ import com.google.android.exoplayer.upstream.BandwidthMeter;
 
 import java.util.List;
 import java.util.Random;
+import java.util.Timer;
+import java.util.TimerTask;
 
 /**
  * Selects from a number of available formats during playback.
@@ -161,6 +163,8 @@ public interface FormatEvaluator {
     public static final int DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS = 25000;
     public static final float DEFAULT_BANDWIDTH_FRACTION = 0.75f;
 
+    public static final int DEFAULT_MIN_TIME_BETWEEN_BITRATE_CHANGE_MS = 10000;
+
     private final BandwidthMeter bandwidthMeter;
 
     private final int maxInitialBitrate;
@@ -168,15 +172,23 @@ public interface FormatEvaluator {
     private final long maxDurationForQualityDecreaseUs;
     private final long minDurationToRetainAfterDiscardUs;
     private final float bandwidthFraction;
+    private final long minTimeBetweenBitrateChange;
+    private long bitrateChangedAtMillisecond = 0;
+    private long millisecondsElapsed = 0;
+
+
+    private Timer timer;
 
     /**
      * @param bandwidthMeter Provides an estimate of the currently available bandwidth.
      */
     public AdaptiveEvaluator(BandwidthMeter bandwidthMeter) {
-      this (bandwidthMeter, DEFAULT_MAX_INITIAL_BITRATE,
-          DEFAULT_MIN_DURATION_FOR_QUALITY_INCREASE_MS,
-          DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS,
-          DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS, DEFAULT_BANDWIDTH_FRACTION);
+      this(bandwidthMeter, DEFAULT_MAX_INITIAL_BITRATE,
+              DEFAULT_MIN_DURATION_FOR_QUALITY_INCREASE_MS,
+              DEFAULT_MAX_DURATION_FOR_QUALITY_DECREASE_MS,
+              DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS,
+              DEFAULT_BANDWIDTH_FRACTION,
+              DEFAULT_MIN_TIME_BETWEEN_BITRATE_CHANGE_MS);
     }
 
     /**
@@ -194,19 +206,31 @@ public interface FormatEvaluator {
      * @param bandwidthFraction The fraction of the available bandwidth that the evaluator should
      *     consider available for use. Setting to a value less than 1 is recommended to account
      *     for inaccuracies in the bandwidth estimator.
+     * @param minTimeBetweenBitRateChange A delay value to prevent subsequent switches in between bitrates,
+     *     especially with high bitrates the buffer could not be full causing artefacts
      */
     public AdaptiveEvaluator(BandwidthMeter bandwidthMeter,
         int maxInitialBitrate,
         int minDurationForQualityIncreaseMs,
         int maxDurationForQualityDecreaseMs,
         int minDurationToRetainAfterDiscardMs,
-        float bandwidthFraction) {
+        float bandwidthFraction,
+        int minTimeBetweenBitRateChange) {
       this.bandwidthMeter = bandwidthMeter;
       this.maxInitialBitrate = maxInitialBitrate;
       this.minDurationForQualityIncreaseUs = minDurationForQualityIncreaseMs * 1000L;
       this.maxDurationForQualityDecreaseUs = maxDurationForQualityDecreaseMs * 1000L;
       this.minDurationToRetainAfterDiscardUs = minDurationToRetainAfterDiscardMs * 1000L;
       this.bandwidthFraction = bandwidthFraction;
+      this.minTimeBetweenBitrateChange = minTimeBetweenBitRateChange;
+      timer = new Timer();
+
+      timer.scheduleAtFixedRate(new TimerTask() {
+        @Override
+        public void run() {
+          millisecondsElapsed = millisecondsElapsed + 1000;
+        }
+      }, 1000, 1000);
     }
 
     @Override
@@ -228,37 +252,45 @@ public interface FormatEvaluator {
       Format ideal = determineIdealFormat(formats, bandwidthMeter.getBitrateEstimate());
       boolean isHigher = ideal != null && current != null && ideal.bitrate > current.bitrate;
       boolean isLower = ideal != null && current != null && ideal.bitrate < current.bitrate;
-      if (isHigher) {
-        if (bufferedDurationUs < minDurationForQualityIncreaseUs) {
-          // The ideal format is a higher quality, but we have insufficient buffer to
-          // safely switch up. Defer switching up for now.
-          ideal = current;
-        } else if (bufferedDurationUs >= minDurationToRetainAfterDiscardUs) {
-          // We're switching from an SD stream to a stream of higher resolution. Consider
-          // discarding already buffered media chunks. Specifically, discard media chunks starting
-          // from the first one that is of lower bandwidth, lower resolution and that is not HD.
-          for (int i = 1; i < queue.size(); i++) {
-            MediaChunk thisChunk = queue.get(i);
-            long durationBeforeThisSegmentUs = thisChunk.startTimeUs - playbackPositionUs;
-            if (durationBeforeThisSegmentUs >= minDurationToRetainAfterDiscardUs
-                && thisChunk.format.bitrate < ideal.bitrate
-                && thisChunk.format.height < ideal.height
-                && thisChunk.format.height < 720
-                && thisChunk.format.width < 1280) {
-              // Discard chunks from this one onwards.
-              evaluation.queueSize = i;
-              break;
+
+      long millisecondsSinceBitrateChange = millisecondsElapsed - bitrateChangedAtMillisecond;
+
+      if(bitrateChangedAtMillisecond == 0 || millisecondsSinceBitrateChange > minTimeBetweenBitrateChange){
+        if (isHigher) {
+          if (bufferedDurationUs < minDurationForQualityIncreaseUs) {
+            // The ideal format is a higher quality, but we have insufficient buffer to
+            // safely switch up. Defer switching up for now.
+            ideal = current;
+          } else if (bufferedDurationUs >= minDurationToRetainAfterDiscardUs) {
+            // We're switching from an SD stream to a stream of higher resolution. Consider
+            // discarding already buffered media chunks. Specifically, discard media chunks starting
+            // from the first one that is of lower bandwidth, lower resolution and that is not HD.
+            for (int i = 1; i < queue.size(); i++) {
+              MediaChunk thisChunk = queue.get(i);
+              long durationBeforeThisSegmentUs = thisChunk.startTimeUs - playbackPositionUs;
+              if (durationBeforeThisSegmentUs >= minDurationToRetainAfterDiscardUs
+                      && thisChunk.format.bitrate < ideal.bitrate
+                      && thisChunk.format.height < ideal.height
+                      && thisChunk.format.height < 720
+                      && thisChunk.format.width < 1280) {
+                // Discard chunks from this one onwards.
+                evaluation.queueSize = i;
+                break;
+              }
             }
           }
+        } else if (isLower && current != null
+                && bufferedDurationUs >= maxDurationForQualityDecreaseUs) {
+          // The ideal format is a lower quality, but we have sufficient buffer to defer switching
+          // down for now.
+          ideal = current;
         }
-      } else if (isLower && current != null
-        && bufferedDurationUs >= maxDurationForQualityDecreaseUs) {
-        // The ideal format is a lower quality, but we have sufficient buffer to defer switching
-        // down for now.
+      } else {
         ideal = current;
       }
       if (current != null && ideal != current) {
         evaluation.trigger = Chunk.TRIGGER_ADAPTIVE;
+        bitrateChangedAtMillisecond = millisecondsElapsed;
       }
       evaluation.format = ideal;
     }
