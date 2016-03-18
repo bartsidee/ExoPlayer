@@ -163,7 +163,7 @@ public interface FormatEvaluator {
     public static final int DEFAULT_MIN_DURATION_TO_RETAIN_AFTER_DISCARD_MS = 25000;
     public static final float DEFAULT_BANDWIDTH_FRACTION = 0.75f;
 
-    public static final int DEFAULT_MIN_TIME_BETWEEN_BITRATE_CHANGE_MS = 10000;
+    public static final int DEFAULT_MIN_TIME_BETWEEN_BITRATE_CHANGE_MS = 3000;
 
     private final BandwidthMeter bandwidthMeter;
 
